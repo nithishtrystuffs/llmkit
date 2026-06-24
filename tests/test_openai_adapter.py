@@ -140,3 +140,20 @@ async def test_stream_yields_normalized_text_deltas():
     assert chunks[3].stop_reason == StopReason.END_TURN
     assert chunks[4].usage.input_tokens == 3
     assert chunks[4].usage.output_tokens == 2
+
+@pytest.mark.asyncio
+async def test_azure_endpoint_uses_azure_client():
+    """When azure_endpoint is provided, adapter must use AsyncAzureOpenAI,
+    not AsyncOpenAI — wrong client = wrong base URL = all requests fail."""
+    from openai import AsyncAzureOpenAI, AsyncOpenAI
+
+    azure_adapter = OpenAIAdapter(
+        api_key="fake-azure-key",
+        azure_endpoint="https://my-resource.openai.azure.com",
+        api_version="2024-02-01",
+    )
+    assert isinstance(azure_adapter._client, AsyncAzureOpenAI)
+
+    # Default (no azure_endpoint) must still use regular AsyncOpenAI
+    default_adapter = OpenAIAdapter(api_key="fake-key")
+    assert isinstance(default_adapter._client, AsyncOpenAI)

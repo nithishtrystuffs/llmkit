@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 
-import openai
+from openai import AsyncOpenAI, AsyncAzureOpenAI
 
 from llmkit.adapters.base import ProviderAdapter
 from llmkit.core.types import (
@@ -62,8 +62,15 @@ def _normalize_stop_reason(reason: str | None) -> StopReason:
 class OpenAIAdapter(ProviderAdapter):
     """ProviderAdapter implementation backed by the official `openai` SDK."""
 
-    def __init__(self, api_key: str | None = None) -> None:
-        self._client = openai.AsyncOpenAI(api_key=api_key)
+    def __init__(self, api_key: str | None = None, azure_endpoint: str | None = None, api_version: str | None = None ) -> None:
+        if azure_endpoint is not None:
+            self._client = AsyncAzureOpenAI(
+                api_key=api_key,
+                azure_endpoint=azure_endpoint,
+                api_version=api_version or "2024-02-01"
+            )
+        else:
+            self._client = AsyncOpenAI(api_key=api_key)
 
     # --- translation: core -> openai ---
 
