@@ -1,0 +1,26 @@
+[project]
+name = "llmkit"
+version = "0.1.0"
+description = "Provider-agnostic LLM SDK to solve vendor lock-in across Claude, OpenAI, Gemini, and others."
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.0",
+]
+
+[project.optional-dependencies]
+anthropic = ["anthropic>=0.111.0"]
+openai = ["openai>=1.0"]
+gemini = ["google-genai>=2.0"]
+ollama = ["ollama>=0.6"]
+all = ["llmkit[anthropic,openai,gemini,ollama]"]
+dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["llmkit*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
