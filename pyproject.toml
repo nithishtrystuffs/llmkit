@@ -2,7 +2,37 @@
 name = "llmkit"
 version = "0.1.2"
 description = "Provider-agnostic LLM SDK to solve vendor lock-in across Claude, OpenAI, Gemini, and others."
+readme = "README.md"
 requires-python = ">=3.10"
+license = { text = "MIT" }
+
+authors = [
+    { name = "Nithish Kumar", email = "your@email.com" }
+]
+
+keywords = [
+    "llm",
+    "ai",
+    "openai",
+    "anthropic",
+    "gemini",
+    "ollama",
+    "vendor-lock-in",
+    "sdk"
+]
+
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Operating System :: OS Independent",
+    "Typing :: Typed",
+]
+
 dependencies = [
     "pydantic>=2.0",
 ]
@@ -12,11 +42,24 @@ anthropic = ["anthropic>=0.111.0"]
 openai = ["openai>=1.0"]
 gemini = ["google-genai>=2.0"]
 ollama = ["ollama>=0.6"]
-all = ["llmkit[anthropic,openai,gemini,ollama]"]
-dev = ["pytest>=8.0", "pytest-asyncio>=0.23"]
+
+all = [
+    "llmkit[anthropic,openai,gemini,ollama]"
+]
+
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[project.urls]
+Homepage = "https://github.com/nithishtrystuffs/llmkit"
+Repository = "https://github.com/nithishtrystuffs/llmkit"
+Issues = "https://github.com/nithishtrystuffs/llmkit/issues"
+Documentation = "https://github.com/nithishtrystuffs/llmkit"
 
 [build-system]
-requires = ["setuptools>=68"]
+requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
