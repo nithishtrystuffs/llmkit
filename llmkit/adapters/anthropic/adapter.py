@@ -6,6 +6,21 @@ Owns 100% of the translation between llmkit's neutral core types and the
 project should know what an Anthropic API request looks like — that
 knowledge lives here and only here. This is the core of the adapter
 pattern: if Anthropic changes their API, only this file changes.
+
+Tool calling notes:
+- Tool definitions: Anthropic wants {name, description, input_schema}.
+  Our Tool type already matches this field-for-field — no renaming needed
+  (this is the provider our Tool type happens to mirror most closely).
+- Incoming tool_use: Anthropic puts ToolUseBlock(id, name, input) directly
+  in the assistant message's `content` list, same as our core ContentBlock
+  model — again, a near 1:1 match.
+- Outgoing tool_result: must be a `user`-role message containing a
+  `tool_result` content block (NOT its own message role, unlike OpenAI).
+  Our core ToolResultBlock is designed to sit inside a USER Message's
+  content list for exactly this reason.
+- Streaming tool calls: arrives as content_block_start (type="tool_use",
+  with id/name but empty input) followed by content_block_delta events
+  with delta.type="input_json_delta" carrying partial_json fragments.
 """
 
 from __future__ import annotations
@@ -25,6 +40,11 @@ from llmkit.core.types import (
     StreamChunk,
     TextBlock,
     TextDeltaChunk,
+    Tool,
+    ToolCallDeltaChunk,
+    ToolCallStartChunk,
+    ToolResultBlock,
+    ToolUseBlock,
     Usage,
 )
 
@@ -33,6 +53,7 @@ _STOP_REASON_MAP: dict[str, StopReason] = {
     "end_turn": StopReason.END_TURN,
     "max_tokens": StopReason.MAX_TOKENS,
     "stop_sequence": StopReason.STOP_SEQUENCE,
+    "tool_use": StopReason.TOOL_USE,
 }
 
 
@@ -58,6 +79,10 @@ class AnthropicAdapter(ProviderAdapter):
         list (unlike OpenAI) — system prompts are a separate top-level
         `system` param. Callers are expected to pass `system` separately;
         this only translates user/assistant turns.
+
+        ToolUseBlock and ToolResultBlock both pass through close to as-is,
+        since Anthropic's wire format is the closest match to our core
+        schema of any of the four providers.
         """
         result = []
         for msg in messages:
@@ -66,27 +91,56 @@ class AnthropicAdapter(ProviderAdapter):
                     "System messages must be passed via the `system` parameter, "
                     "not in the `messages` list, when using the Anthropic adapter."
                 )
-            result.append(
-                {
-                    "role": msg.role.value,
-                    "content": [
-                        {"type": "text", "text": block.text}
-                        for block in msg.content
-                        if isinstance(block, TextBlock)
-                    ],
-                }
-            )
+
+            content_blocks = []
+            for block in msg.content:
+                if isinstance(block, TextBlock):
+                    content_blocks.append({"type": "text", "text": block.text})
+                elif isinstance(block, ToolUseBlock):
+                    content_blocks.append(
+                        {
+                            "type": "tool_use",
+                            "id": block.id,
+                            "name": block.name,
+                            "input": block.input,
+                        }
+                    )
+                elif isinstance(block, ToolResultBlock):
+                    content_blocks.append(
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": block.tool_use_id,
+                            "content": block.content,
+                            "is_error": block.is_error,
+                        }
+                    )
+
+            result.append({"role": msg.role.value, "content": content_blocks})
         return result
+
+    @staticmethod
+    def _to_anthropic_tools(tools: list[Tool] | None) -> list[dict] | None:
+        """Anthropic's tool schema matches our Tool type field-for-field —
+        this is the one adapter where tool translation is nearly a no-op."""
+        if not tools:
+            return None
+        return [
+            {"name": t.name, "description": t.description, "input_schema": t.input_schema}
+            for t in tools
+        ]
 
     # --- translation: anthropic -> core ---
 
     @staticmethod
     def _from_anthropic_response(raw: anthropic.types.Message) -> Response:
-        content = [
-            TextBlock(text=block.text)
-            for block in raw.content
-            if block.type == "text"
-        ]
+        content = []
+        for block in raw.content:
+            if block.type == "text":
+                content.append(TextBlock(text=block.text))
+            elif block.type == "tool_use":
+                content.append(
+                    ToolUseBlock(id=block.id, name=block.name, input=block.input)
+                )
         return Response(
             content=content,
             stop_reason=_normalize_stop_reason(raw.stop_reason),
@@ -108,6 +162,7 @@ class AnthropicAdapter(ProviderAdapter):
         max_tokens: int,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> Response:
         kwargs: dict = {
             "model": model,
@@ -118,6 +173,9 @@ class AnthropicAdapter(ProviderAdapter):
             kwargs["system"] = system
         if temperature is not None:
             kwargs["temperature"] = temperature
+        anthropic_tools = self._to_anthropic_tools(tools)
+        if anthropic_tools is not None:
+            kwargs["tools"] = anthropic_tools
 
         raw = await self._client.messages.create(**kwargs)
         return self._from_anthropic_response(raw)
@@ -130,6 +188,7 @@ class AnthropicAdapter(ProviderAdapter):
         max_tokens: int,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         kwargs: dict = {
             "model": model,
@@ -140,26 +199,46 @@ class AnthropicAdapter(ProviderAdapter):
             kwargs["system"] = system
         if temperature is not None:
             kwargs["temperature"] = temperature
+        anthropic_tools = self._to_anthropic_tools(tools)
+        if anthropic_tools is not None:
+            kwargs["tools"] = anthropic_tools
+
+        # Tracks which content_block index is a tool_use block, so
+        # content_block_delta events with input_json_delta know to emit
+        # ToolCallDeltaChunk instead of being silently dropped.
+        tool_use_indices: set[int] = set()
 
         async with self._client.messages.stream(**kwargs) as stream:
             async for event in stream:
-                chunk = self._translate_stream_event(event)
+                chunk = self._translate_stream_event(event, tool_use_indices)
                 if chunk is not None:
                     yield chunk
 
     @staticmethod
-    def _translate_stream_event(event) -> StreamChunk | None:
+    def _translate_stream_event(event, tool_use_indices: set[int]) -> StreamChunk | None:
         """Anthropic's stream yields typed events: message_start,
-        content_block_delta (with a nested delta.type of text_delta /
-        input_json_delta / ...), message_delta, message_stop, etc.
-        We only handle text_delta here — tool-call streaming
-        (input_json_delta) is explicitly out of scope for this first pass.
+        content_block_start/delta/stop, message_delta, message_stop, etc.
+        Tool calls arrive as content_block_start (type="tool_use") followed
+        by content_block_delta events with delta.type="input_json_delta".
         """
         if event.type == "message_start":
             return MessageStartChunk(model=event.message.model)
 
-        if event.type == "content_block_delta" and event.delta.type == "text_delta":
-            return TextDeltaChunk(text=event.delta.text)
+        if event.type == "content_block_start" and event.content_block.type == "tool_use":
+            tool_use_indices.add(event.index)
+            return ToolCallStartChunk(
+                index=event.index,
+                id=event.content_block.id,
+                name=event.content_block.name,
+            )
+
+        if event.type == "content_block_delta":
+            if event.delta.type == "text_delta":
+                return TextDeltaChunk(text=event.delta.text)
+            if event.delta.type == "input_json_delta":
+                return ToolCallDeltaChunk(
+                    index=event.index, partial_json=event.delta.partial_json
+                )
 
         if event.type == "message_delta":
             usage = None
@@ -176,6 +255,6 @@ class AnthropicAdapter(ProviderAdapter):
                 usage=usage,
             )
 
-        # message_stop, content_block_start, content_block_stop, ping:
-        # no normalized equivalent needed for this minimal pass.
+        # message_stop, content_block_stop, ping: no normalized equivalent
+        # needed for this pass.
         return None

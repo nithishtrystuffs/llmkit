@@ -14,7 +14,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import AsyncIterator
 
-from llmkit.core.types import Message, Response, StreamChunk
+from llmkit.core.types import Message, Response, StreamChunk, Tool
 
 
 class ProviderAdapter(ABC):
@@ -29,8 +29,14 @@ class ProviderAdapter(ABC):
         max_tokens: int,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> Response:
-        """Non-streaming chat completion. Must return a fully-normalized Response."""
+        """Non-streaming chat completion. Must return a fully-normalized Response.
+
+        If `tools` is provided and the model elects to call one or more of
+        them, `Response.content` includes ToolUseBlock entries and
+        `Response.stop_reason` is StopReason.TOOL_USE.
+        """
         ...
 
     @abstractmethod
@@ -42,6 +48,11 @@ class ProviderAdapter(ABC):
         max_tokens: int,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> AsyncIterator[StreamChunk]:
-        """Streaming chat completion. Must yield normalized StreamChunk objects."""
+        """Streaming chat completion. Must yield normalized StreamChunk objects.
+
+        If `tools` is provided, tool calls stream as a ToolCallStartChunk
+        followed by one or more ToolCallDeltaChunk fragments per call.
+        """
         ...

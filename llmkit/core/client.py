@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import AsyncIterator
 
 from llmkit.adapters.base import ProviderAdapter
-from llmkit.core.types import Message, Response, StreamChunk
+from llmkit.core.types import Message, Response, StreamChunk, Tool
 
 
 class Client:
@@ -28,6 +28,7 @@ class Client:
         max_tokens: int = 1024,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> Response:
         return await self._adapter.generate(
             messages,
@@ -35,6 +36,7 @@ class Client:
             max_tokens=max_tokens,
             system=system,
             temperature=temperature,
+            tools=tools,
         )
 
     def stream(
@@ -45,6 +47,7 @@ class Client:
         max_tokens: int = 1024,
         system: str | None = None,
         temperature: float | None = None,
+        tools: list[Tool] | None = None,
     ) -> AsyncIterator[StreamChunk]:
         return self._adapter.stream(
             messages,
@@ -52,4 +55,5 @@ class Client:
             max_tokens=max_tokens,
             system=system,
             temperature=temperature,
+            tools=tools,
         )
