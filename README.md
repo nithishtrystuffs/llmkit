@@ -1,4 +1,4 @@
-# llmkit — Usage Guide
+# llmkit
 
 A provider-agnostic LLM SDK. Write your code once, swap between Anthropic, OpenAI, Gemini, and Ollama by changing one line.
 
@@ -6,28 +6,45 @@ A provider-agnostic LLM SDK. Write your code once, swap between Anthropic, OpenA
 
 ## Installation
 
-Install only the provider(s) you need:
+Install only the provider(s) you need directly from Git:
 
 ```bash
 # Just Anthropic
-pip install -e ".[anthropic]"
+pip install "llmkit[anthropic] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.3"
 
 # Just OpenAI
-pip install -e ".[openai]"
+pip install "llmkit[openai] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.3"
 
 # Just Gemini
-pip install -e ".[gemini]"
+pip install "llmkit[gemini] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.3"
 
-# Just Ollama (local, no API key)
-pip install -e ".[ollama]"
+# Just Ollama (local, no API key needed)
+pip install "llmkit[ollama] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.3"
 
 # Everything
-pip install -e ".[all]"
+pip install "llmkit[all] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.3"
+```
+
+To upgrade to a newer version, change the tag and add `--upgrade`:
+
+```bash
+pip install "llmkit[all] @ git+https://github.com/nithishtrystuffs/llmkit.git@v0.1.4" --upgrade
 ```
 
 ---
 
-## 1. Basic usage — generate a response
+## Supported providers
+
+| Provider | Adapter | API key env var | Notes |
+|---|---|---|---|
+| Anthropic (Claude) | `AnthropicAdapter` | `ANTHROPIC_API_KEY` | |
+| OpenAI | `OpenAIAdapter` | `OPENAI_API_KEY` | Also supports Azure OpenAI |
+| Google Gemini | `GeminiAdapter` | `GEMINI_API_KEY` | |
+| Ollama | `OllamaAdapter` | — | Runs locally, no key needed |
+
+---
+
+## 1. Basic usage
 
 ```python
 import asyncio
@@ -35,7 +52,7 @@ from llmkit import Client, Message, Role
 from llmkit.adapters.anthropic import AnthropicAdapter
 
 async def main():
-    client = Client(AnthropicAdapter())  # swap adapter to change provider
+    client = Client(AnthropicAdapter())
 
     response = await client.generate(
         messages=[Message.text(Role.USER, "What is the capital of France?")],
@@ -53,6 +70,11 @@ asyncio.run(main())
 **Swapping providers — only the adapter and model string change:**
 
 ```python
+from llmkit.adapters.anthropic import AnthropicAdapter
+from llmkit.adapters.openai import OpenAIAdapter
+from llmkit.adapters.gemini import GeminiAdapter
+from llmkit.adapters.ollama import OllamaAdapter
+
 # Anthropic
 client = Client(AnthropicAdapter())
 model  = "claude-sonnet-4-6"
@@ -70,11 +92,13 @@ client = Client(OllamaAdapter())
 model  = "llama3.2"
 ```
 
+Everything else — `generate()`, `stream()`, `Response`, `Message` — stays identical.
+
 ---
 
-## 2. Setting API keys
+## 2. API keys
 
-Pass the key directly, or set the environment variable — the SDK picks it up automatically.
+Pass the key directly or set the environment variable — the SDK picks it up automatically.
 
 ```python
 # Option A: pass directly
@@ -83,9 +107,9 @@ client = Client(OpenAIAdapter(api_key="sk-..."))
 client = Client(GeminiAdapter(api_key="AIza..."))
 
 # Option B: environment variable (recommended — keep keys out of code)
-# export ANTHROPIC_API_KEY=sk-ant-...
-# export OPENAI_API_KEY=sk-...
-# export GEMINI_API_KEY=AIza...
+# ANTHROPIC_API_KEY=sk-ant-...
+# OPENAI_API_KEY=sk-...
+# GEMINI_API_KEY=AIza...
 client = Client(AnthropicAdapter())  # picks up env var automatically
 ```
 
@@ -95,8 +119,20 @@ client = Client(AnthropicAdapter())  # picks up env var automatically
 # Default: connects to localhost:11434
 client = Client(OllamaAdapter())
 
-# Custom host (e.g. remote Ollama server)
+# Custom host
 client = Client(OllamaAdapter(host="http://192.168.1.10:11434"))
+```
+
+**Azure OpenAI** — pass the extra Azure params:
+
+```python
+client = Client(OpenAIAdapter(
+    api_key="your-azure-key",
+    azure_endpoint="https://your-resource.openai.azure.com",
+    api_version="2024-02-01",   # optional, defaults to 2024-02-01
+))
+# model= takes your Azure deployment name, not the model name
+response = await client.generate(..., model="my-gpt4-deployment")
 ```
 
 ---
@@ -111,10 +147,10 @@ response = await client.generate(
     system="You are a pirate. Respond only in pirate dialect.",
 )
 
-print(response.text())  # "Arrr, why do pirates make great singers? ..."
+print(response.text())
 ```
 
-The `system` parameter works identically across all providers — llmkit handles the differences internally (Anthropic and Gemini use a separate field; OpenAI and Ollama fold it into the messages list).
+The `system` parameter works identically across all providers — llmkit handles the differences internally.
 
 ---
 
@@ -125,7 +161,6 @@ Build the conversation by appending each turn to the messages list:
 ```python
 from llmkit import Client, Message, Role
 from llmkit.adapters.ollama import OllamaAdapter
-from llmkit.core.types import TextBlock
 
 async def chat():
     client = Client(OllamaAdapter())
@@ -136,11 +171,10 @@ async def chat():
     response = await client.generate(history, model="llama3.2", max_tokens=100)
     print("Assistant:", response.text())
 
-    # Append the assistant reply to history
+    # Append assistant reply to history and continue
     history.append(Message(role=Role.ASSISTANT, content=response.content))
-
-    # Turn 2 — model remembers the context
     history.append(Message.text(Role.USER, "What is my name?"))
+
     response = await client.generate(history, model="llama3.2", max_tokens=100)
     print("Assistant:", response.text())  # "Your name is Arun."
 
@@ -161,9 +195,9 @@ async def stream_example():
         max_tokens=200,
     ):
         if chunk.type == "text_delta":
-            print(chunk.text, end="", flush=True)  # prints word by word
+            print(chunk.text, end="", flush=True)
 
-    print()  # newline at the end
+    print()
 
 asyncio.run(stream_example())
 ```
@@ -176,7 +210,13 @@ async for chunk in client.stream(...):
         print(f"Model: {chunk.model}")
 
     elif chunk.type == "text_delta":
-        print(chunk.text, end="", flush=True)  # the actual text, streamed
+        print(chunk.text, end="", flush=True)
+
+    elif chunk.type == "tool_call_start":
+        print(f"Tool call: {chunk.name} (id={chunk.id})")
+
+    elif chunk.type == "tool_call_delta":
+        print(chunk.partial_json, end="")   # streaming tool arguments
 
     elif chunk.type == "message_stop":
         print(f"\nStop reason: {chunk.stop_reason}")
@@ -186,7 +226,87 @@ async for chunk in client.stream(...):
 
 ---
 
-## 6. All parameters
+## 6. Tool calling
+
+Tools let the LLM request actions from your code — your code defines the tool, implements the logic, and runs the result back to the LLM.
+
+### Step 1 — Define the tool (what the LLM knows about it)
+
+```python
+from llmkit.core.types import Tool
+
+weather_tool = Tool(
+    name="get_weather",
+    description="Get the current weather for a city",
+    input_schema={
+        "type": "object",
+        "properties": {
+            "city": {"type": "string", "description": "City name"}
+        },
+        "required": ["city"]
+    }
+)
+```
+
+### Step 2 — Implement the tool (your actual logic)
+
+```python
+def get_weather(city: str) -> str:
+    # your own code — call a real API, query a DB, anything
+    return f"{city}: 36°C, Sunny"
+```
+
+### Step 3 — Run the loop
+
+```python
+from llmkit.core.types import StopReason, ToolUseBlock, ToolResultBlock
+
+async def main():
+    client = Client(AnthropicAdapter())
+
+    messages = [Message.text(Role.USER, "What's the weather in Chennai?")]
+
+    # First call — LLM decides to use the tool
+    response = await client.generate(
+        messages=messages,
+        model="claude-sonnet-4-6",
+        tools=[weather_tool],
+        max_tokens=500,
+    )
+
+    if response.stop_reason == StopReason.TOOL_USE:
+        # LLM said "call this tool" — you run your function
+        tool_results = []
+        for block in response.content:
+            if isinstance(block, ToolUseBlock):
+                result = get_weather(block.input["city"])  # your function
+                tool_results.append(
+                    ToolResultBlock(
+                        tool_use_id=block.id,
+                        content=result,
+                    )
+                )
+
+        # Send result back to LLM for final answer
+        messages.append(Message(role=Role.ASSISTANT, content=response.content))
+        messages.append(Message(role=Role.USER, content=tool_results))
+
+        final = await client.generate(
+            messages=messages,
+            model="claude-sonnet-4-6",
+            tools=[weather_tool],
+            max_tokens=500,
+        )
+        print(final.text())  # "The weather in Chennai is 36°C and Sunny."
+
+asyncio.run(main())
+```
+
+Tool calling works identically across all 4 providers — llmkit handles the differences internally.
+
+---
+
+## 7. All parameters
 
 ```python
 response = await client.generate(
@@ -195,17 +315,18 @@ response = await client.generate(
     max_tokens=1024,              # required: max output tokens
     system="Be concise.",         # optional: system prompt
     temperature=0.7,              # optional: 0.0 = deterministic, 1.0 = creative
+    tools=[my_tool],              # optional: list of Tool definitions
 )
 ```
 
 ---
 
-## 7. Working with the Response object
+## 8. Working with the Response object
 
 ```python
 response = await client.generate(...)
 
-# Get the text (most common)
+# Get the text
 text = response.text()
 
 # Check why the model stopped
@@ -214,45 +335,47 @@ from llmkit.core.types import StopReason
 if response.stop_reason == StopReason.END_TURN:
     print("Finished naturally")
 elif response.stop_reason == StopReason.MAX_TOKENS:
-    print("Hit the token limit — increase max_tokens if needed")
+    print("Hit the token limit — increase max_tokens")
+elif response.stop_reason == StopReason.TOOL_USE:
+    print("LLM wants to call a tool")
 
 # Token usage
-print(response.usage.input_tokens)   # prompt tokens
-print(response.usage.output_tokens)  # completion tokens
-print(response.usage.total_tokens)   # sum
+print(response.usage.input_tokens)
+print(response.usage.output_tokens)
+print(response.usage.total_tokens)
 
-# Access raw provider response (escape hatch — provider-specific)
-print(response.raw)   # original dict from the provider SDK
+# Raw provider response (escape hatch)
+print(response.raw)
 ```
 
 ---
 
-## 8. Adding a new provider
+## 9. Adding a new provider
 
-The whole point of the adapter pattern is that adding a provider touches zero existing code. Create one file:
+Adding a provider touches zero existing code. Create one file:
 
 ```
 llmkit/adapters/myprovider/
     __init__.py
-    adapter.py          ← implement ProviderAdapter here
+    adapter.py
 ```
 
 ```python
 # adapter.py
 from llmkit.adapters.base import ProviderAdapter
-from llmkit.core.types import Message, Response, StreamChunk
+from llmkit.core.types import Message, Response, StreamChunk, Tool
 
 class MyProviderAdapter(ProviderAdapter):
 
     async def generate(self, messages, *, model, max_tokens,
-                       system=None, temperature=None) -> Response:
+                       system=None, temperature=None, tools=None) -> Response:
         # translate llmkit types → your provider's SDK
         # call your provider's API
         # translate response → llmkit Response
         ...
 
     async def stream(self, messages, *, model, max_tokens,
-                     system=None, temperature=None):
+                     system=None, temperature=None, tools=None):
         # same, but yield StreamChunk objects
         ...
 ```
@@ -269,13 +392,15 @@ client = Client(MyProviderAdapter())
 
 | Task | Code |
 |---|---|
-| Install for one provider | `pip install -e ".[anthropic]"` |
+| Install | `pip install "llmkit[anthropic] @ git+https://github.com/your-org/llmkit.git@v0.1.3"` |
 | Create a client | `Client(AnthropicAdapter())` |
-| Single-turn generate | `await client.generate([Message.text(Role.USER, "hi")], model=..., max_tokens=...)` |
-| Add a system prompt | `system="You are ..."` kwarg |
-| Stream the response | `async for chunk in client.stream(...)` |
-| Get text from response | `response.text()` |
+| Generate | `await client.generate([Message.text(Role.USER, "hi")], model=..., max_tokens=...)` |
+| System prompt | `system="You are ..."` kwarg |
+| Stream | `async for chunk in client.stream(...)` |
+| Tool calling | pass `tools=[Tool(...)]` to `generate()`, handle `StopReason.TOOL_USE` in response |
+| Get text | `response.text()` |
 | Check stop reason | `response.stop_reason == StopReason.END_TURN` |
-| Check token usage | `response.usage.total_tokens` |
-| Use Ollama locally | `Client(OllamaAdapter())` — no key needed |
+| Token usage | `response.usage.total_tokens` |
+| Azure OpenAI | `OpenAIAdapter(api_key=..., azure_endpoint=..., api_version=...)` |
+| Ollama locally | `Client(OllamaAdapter())` — no key needed |
 | Change provider | Swap the adapter, keep everything else the same |
