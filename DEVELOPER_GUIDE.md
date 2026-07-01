@@ -33,7 +33,13 @@ everything as OpenAI-shaped).
 Your application code
         |
         v
-   llmkit.Client  --------------  thin, dumb, just forwards calls
+   llmkit.Client  ------  holds adapter + optional retry/timeout/cost config
+        |
+        v
+  Resilience layer        RetryConfig  ->  with_retry() + exponential backoff
+  (inside Client)         timeout      ->  asyncio.wait_for per attempt
+                          error_map    ->  raw SDK exc -> normalized LLMKitError
+                          CostTracker  ->  records Usage per call
         |
         v
 ProviderAdapter (abstract interface)
@@ -68,8 +74,12 @@ llmkit/
 │   ├── __init__.py             # public API surface — what `from llmkit import X` exposes
 │   ├── core/
 │   │   ├── __init__.py         # empty, just marks the package
-│   │   ├── client.py           # Client — the dumb public-facing class
-│   │   └── types.py            # the neutral schema: Message, Tool, Response, StreamChunk...
+│   │   ├── types.py            # the neutral schema: Message, Tool, Response, StreamChunk...
+│   │   ├── client.py           # Client — wires adapter + resilience layer together
+│   │   ├── errors.py           # normalized exception hierarchy (LLMKitError and subtypes)
+│   │   ├── error_map.py        # per-provider raw SDK exc -> LLMKitError translation
+│   │   ├── retry.py            # RetryConfig + with_retry() async helper
+│   │   └── cost.py             # CostTracker, CallRecord, DEFAULT_PRICE_TABLE
 │   └── adapters/
 │       ├── __init__.py         # empty
 │       ├── base.py             # ProviderAdapter — the abstract contract
@@ -83,7 +93,8 @@ llmkit/
 │   ├── test_anthropic_adapter.py
 │   ├── test_openai_adapter.py
 │   ├── test_gemini_adapter.py
-│   └── test_ollama_adapter.py
+│   ├── test_ollama_adapter.py
+│   └── test_resilience.py      # retry, timeout, error normalization, cost tracking
 ├── run_compare.py              # live script: same Client/Message, 4 providers
 └── run_tool_calling.py         # live script: full tool-calling loop, 4 providers
 ```
@@ -135,6 +146,75 @@ It holds the original, untranslated provider response (via `.model_dump()` on th
 provider SDK's response object) so that callers who need a provider-specific field
 llmkit hasn't normalized yet can still get at it, without that field polluting the
 neutral schema. It's excluded from serialization on purpose.
+
+---
+
+## 3b. The resilience modules
+
+Four files in `core/` handle everything between the public `Client` and the raw adapter
+call. None of these touch adapters — they only operate on the normalized types.
+
+### `core/errors.py` — the exception hierarchy
+
+```
+LLMKitError                   <- base; always carry .provider, .status_code, .cause
+├── RateLimitError            <- 429 / quota exceeded; retryable
+├── AuthenticationError       <- 401 / bad key; not retryable
+├── TimeoutError              <- asyncio timeout; retryable
+├── ConnectionError           <- server unreachable; retryable
+├── InvalidRequestError       <- 400 / bad params; not retryable
+├── APIError                  <- 5xx server error; retryable
+└── UnknownError              <- unrecognised SDK exception; not retried
+```
+
+`RETRYABLE_ERRORS` is a tuple of the retryable subtypes, used by `retry.py` to decide
+whether to retry or raise immediately. When adding a new error subtype, decide
+whether it belongs in `RETRYABLE_ERRORS` at definition time — the decision should be
+encoded in the type, not scattered in calling code.
+
+### `core/error_map.py` — per-provider normalization
+
+One function per provider (`normalize_anthropic_error`, `normalize_openai_error`, etc.)
+plus a registry dict and a single public entry point:
+
+```python
+from llmkit.core.error_map import normalize_error
+normalized = normalize_error(raw_sdk_exc, "anthropic")
+```
+
+**When adding a new provider:** add a `normalize_<provider>_error(exc)` function and
+register it in `_NORMALIZERS`. The function should handle the provider SDK's specific
+exception hierarchy and fall through to `UnknownError` for anything it doesn't recognise.
+Never raise from inside a normalizer — always return a `LLMKitError`.
+
+### `core/retry.py` — RetryConfig and with_retry()
+
+`with_retry(coro_factory, *, retry_config, timeout, provider)` is the core helper. It
+takes a **factory** (a zero-argument callable returning a fresh coroutine each time),
+not a coroutine directly — coroutines can only be awaited once, so retrying requires
+creating a fresh one per attempt.
+
+Backoff formula: `min(base_delay * 2^attempt + jitter, max_delay)` where jitter is a
+random value in `[0, base_delay]`, preventing thundering-herd when many clients hit a
+rate limit simultaneously.
+
+`Client` calls `with_retry` for `generate()` only — not for `stream()`. See the
+"Streaming" design note in section 10 for why.
+
+### `core/cost.py` — CostTracker and DEFAULT_PRICE_TABLE
+
+`DEFAULT_PRICE_TABLE` is a plain dict of `model_name -> {input: float, output: float}`
+in USD per 1M tokens. It's a reasonable starting point as of mid-2026 but will go stale
+— treat it as a reference, not a contract.
+
+`CostTracker.record()` is called automatically by `Client` after every successful
+`generate()` call. It reads `response.usage` (which is already normalized across all
+providers) and looks up the model price. Unknown models return `$0.00` silently — a
+missing price never crashes an application.
+
+When token prices change, update `DEFAULT_PRICE_TABLE` in `cost.py` and bump the
+library version — callers who need accurate prices can override specific entries via
+`CostTracker(price_table={...})` without waiting for a library update.
 
 ---
 
@@ -377,6 +457,12 @@ fakes) — no network access or real API keys required to run the suite. This is
 deliberate: it lets CI run on every PR without secrets, and lets contributors validate an
 adapter change without needing accounts on all four providers.
 
+`test_resilience.py` covers the retry, timeout, error normalization, and cost tracking
+layers independently — it uses a generic `MagicMock` adapter rather than a real provider
+adapter, so it stays valid even if adapter internals change. When modifying `core/retry.py`,
+`core/errors.py`, `core/error_map.py`, or `core/cost.py`, this is the test file to run
+first.
+
 **When you change a core type** (`core/types.py`), expect every adapter's tests to
 potentially break if their mocked fakes don't have the new fields your code now reads —
 this is the test suite doing its job, not a sign something is wrong. Update the fakes,
@@ -458,3 +544,11 @@ them when extending it — each one exists because of a specific failure mode it
   data.
 - **`raw` is always available, never required.** Every `Response` carries the
   untranslated provider response as an escape hatch, excluded from normal serialization.
+- **Error normalization is unconditional, not opt-in.** Raw SDK exceptions are always
+  mapped to `LLMKitError` subtypes before surfacing to callers, regardless of whether
+  retry is configured. Application code should never need to import from provider SDKs
+  just to write a `try/except`.
+- **Retry is never applied to streaming.** `with_retry` wraps `generate()` only.
+  Streaming introduces stateful output (chunks already yielded) that can't be safely
+  replayed on retry — restarting mid-stream would produce duplicate output. This is a
+  deliberate design boundary, not an oversight to fill in later.

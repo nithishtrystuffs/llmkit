@@ -20,10 +20,11 @@ documentation instead.
 6. [Streaming](#6-streaming)
 7. [Tool calling](#7-tool-calling)
 8. [The Response object](#8-the-response-object)
-9. [All parameters reference](#9-all-parameters-reference)
-10. [Provider-specific notes](#10-provider-specific-notes)
-11. [Capabilities & limitations](#11-capabilities--limitations)
-12. [Quick reference](#12-quick-reference)
+9. [Resilience — retry, timeout, errors, and cost tracking](#9-resilience--retry-timeout-errors-and-cost-tracking)
+10. [All parameters reference](#10-all-parameters-reference)
+11. [Provider-specific notes](#11-provider-specific-notes)
+12. [Capabilities & limitations](#12-capabilities--limitations)
+13. [Quick reference](#13-quick-reference)
 
 ---
 
@@ -384,7 +385,174 @@ print(response.raw)
 
 ---
 
-## 9. All parameters reference
+## 9. Resilience — retry, timeout, errors, and cost tracking
+
+All four features are optional and configured on `Client` at construction time. Omitting
+them gives you the same behaviour as before — no retries, no timeout, raw exceptions
+normalised to llmkit errors, no cost tracking.
+
+### Retry with exponential backoff
+
+```python
+from llmkit import Client, RetryConfig
+from llmkit.adapters.anthropic import AnthropicAdapter
+
+client = Client(
+    AnthropicAdapter(),
+    retry_config=RetryConfig(
+        max_attempts=3,    # 1 initial attempt + 2 retries
+        base_delay=1.0,    # seconds before first retry; doubles each attempt
+        max_delay=60.0,    # cap on wait between retries
+    ),
+)
+```
+
+Only retryable errors are retried — rate limits, timeouts, connection errors, and server
+errors (5xx). Authentication errors and bad requests are raised immediately since retrying
+them won't help.
+
+**Logging retries** via the `on_retry` callback:
+
+```python
+import logging
+
+def log_retry(attempt: int, error, wait: float):
+    logging.warning(f"Retry {attempt + 1} after {wait:.1f}s — {error}")
+
+client = Client(
+    AnthropicAdapter(),
+    retry_config=RetryConfig(max_attempts=3, base_delay=1.0, on_retry=log_retry),
+)
+```
+
+### Per-call timeout
+
+```python
+client = Client(
+    AnthropicAdapter(),
+    timeout_seconds=30.0,   # raises TimeoutError if any single attempt takes longer
+)
+```
+
+Timeout applies per attempt — if you also set `max_attempts=3`, each of the three
+attempts gets its own 30-second window.
+
+> **Streaming:** retry and timeout are **not** applied to `client.stream()` calls.
+> Streaming introduces state (chunks already yielded to your code) that can't be safely
+> replayed — restarting mid-stream would produce duplicate output. If you need retry
+> behaviour around streams, wrap the entire `async for` loop in your own try/except.
+
+### Normalised error exceptions
+
+Whether or not you use retry, all raw SDK exceptions are mapped to llmkit's own
+exception hierarchy before they surface to your code. You never need to import from
+`anthropic`, `openai`, or `google` just to write a `try/except`.
+
+```python
+from llmkit import (
+    LLMKitError,           # base class — catch-all
+    RateLimitError,        # 429 / quota exceeded — retryable
+    AuthenticationError,   # 401 / bad key — not retryable
+    TimeoutError,          # request exceeded timeout — retryable
+    ConnectionError,       # server unreachable (e.g. Ollama not running)
+    InvalidRequestError,   # 400 / bad prompt or params
+    APIError,              # 5xx server error — retryable
+    UnknownError,          # unrecognized exception
+)
+
+try:
+    response = await client.generate(...)
+except RateLimitError as e:
+    print(f"Rate limited by {e.provider} (HTTP {e.status_code})")
+    print(f"Original error: {e.cause}")
+except AuthenticationError:
+    print("Check your API key")
+except LLMKitError as e:
+    print(f"Something went wrong: {e}")
+```
+
+Every exception carries `provider` (which provider raised it), `status_code` (HTTP code
+if known, else `None`), and `cause` (the original raw SDK exception, always available for
+debugging).
+
+### Cost tracking
+
+```python
+from llmkit import CostTracker
+
+tracker = CostTracker()
+client = Client(AnthropicAdapter(), cost_tracker=tracker)
+
+await client.generate([Message.text(Role.USER, "hi")], model="claude-sonnet-4-6", max_tokens=100)
+await client.generate([Message.text(Role.USER, "hello")], model="claude-sonnet-4-6", max_tokens=100)
+
+# Per-call records
+for call in tracker.calls:
+    print(f"{call.model}: {call.total_tokens} tokens, ${call.cost_usd:.6f}")
+
+# Accumulated totals
+print(tracker.total_tokens)
+print(tracker.total_cost_usd)
+print(tracker.call_count)
+
+# Human-readable summary
+print(tracker.summary())
+
+# Breakdown by model
+print(tracker.by_model())
+
+# Reset between sessions
+tracker.reset()
+```
+
+**Custom price table** — override specific models or add models not in the defaults:
+
+```python
+tracker = CostTracker(price_table={
+    "my-fine-tuned-model": {"input": 5.00, "output": 25.00},  # USD per 1M tokens
+    "gpt-4o": {"input": 2.00, "output": 8.00},                # override a default
+})
+```
+
+Unknown models return `$0.00` rather than raising — a missing price never crashes your
+application. Access the tracker from the client at any time via `client.cost_tracker`.
+
+### Putting it all together
+
+```python
+from llmkit import Client, RetryConfig, CostTracker, RateLimitError
+from llmkit.adapters.anthropic import AnthropicAdapter
+import logging
+
+tracker = CostTracker()
+client = Client(
+    AnthropicAdapter(),
+    retry_config=RetryConfig(
+        max_attempts=3,
+        base_delay=1.0,
+        on_retry=lambda attempt, err, wait:
+            logging.warning(f"Retry {attempt + 1} in {wait:.1f}s: {err}"),
+    ),
+    timeout_seconds=30.0,
+    cost_tracker=tracker,
+)
+
+try:
+    response = await client.generate(
+        [Message.text(Role.USER, "Summarise this document...")],
+        model="claude-sonnet-4-6",
+        max_tokens=500,
+    )
+    print(response.text())
+except RateLimitError:
+    print("All retries exhausted — try again later")
+
+print(tracker.summary())
+```
+
+---
+
+## 10. All parameters reference
 
 ```python
 response = await client.generate(
@@ -400,9 +568,20 @@ response = await client.generate(
 `client.stream(...)` accepts the exact same parameters and returns an async iterator of
 chunks instead of a single `Response`.
 
+**Client constructor parameters:**
+
+```python
+client = Client(
+    adapter,                          # required: any ProviderAdapter instance
+    retry_config=RetryConfig(...),    # optional: retry + backoff config
+    timeout_seconds=30.0,            # optional: per-attempt timeout in seconds
+    cost_tracker=CostTracker(),      # optional: token cost tracking
+)
+```
+
 ---
 
-## 10. Provider-specific notes
+## 11. Provider-specific notes
 
 These are real differences in the underlying provider, not bugs — llmkit surfaces them
 honestly rather than papering over them with something that looks consistent but quietly
@@ -431,13 +610,17 @@ loses information.
 
 ---
 
-## 11. Capabilities & limitations
+## 12. Capabilities & limitations
 
 What llmkit supports today:
 
 - Text generation (single-turn and multi-turn), streaming, system prompts
 - Tool/function calling, including streaming tool calls
 - Anthropic, OpenAI, Gemini, and Ollama, behind one identical interface
+- Retry with exponential backoff (configurable, retryable errors only)
+- Per-attempt timeout
+- Normalised error exceptions across all four providers
+- Token cost tracking — per-call and accumulated totals
 
 What llmkit does **not** support yet — don't assume these work:
 
@@ -450,16 +633,16 @@ What llmkit does **not** support yet — don't assume these work:
 - **Vision / image inputs.** Only text content blocks exist today.
 - **Structured/JSON-schema-constrained outputs** as a first-class feature (you can ask a
   model to return JSON via your prompt, but there's no dedicated validation layer yet).
-- **Automatic fallback between providers** if one fails or rate-limits. `Client` wraps
-  exactly one adapter at a time; building your own retry/fallback logic around it is
-  straightforward but not built in.
+- **Automatic fallback between providers.** `Client` wraps one adapter at a time and
+  retries against the same provider — it does not automatically switch to a different
+  provider if one is down.
 
 If your use case needs any of these, check with whoever maintains this library before
 assuming the gap doesn't matter for your task.
 
 ---
 
-## 12. Quick reference
+## 13. Quick reference
 
 | Task | Code |
 |---|---|
@@ -475,5 +658,12 @@ assuming the gap doesn't matter for your task.
 | Get text from response | `response.text()` |
 | Check stop reason | `response.stop_reason == StopReason.END_TURN` |
 | Check token usage | `response.usage.total_tokens` |
+| Enable retry | `Client(adapter, retry_config=RetryConfig(max_attempts=3))` |
+| Set a timeout | `Client(adapter, timeout_seconds=30.0)` |
+| Catch any llmkit error | `except LLMKitError` |
+| Catch rate limits | `except RateLimitError` |
+| Track costs | `tracker = CostTracker(); Client(adapter, cost_tracker=tracker)` |
+| Print cost summary | `tracker.summary()` |
+| Cost by model | `tracker.by_model()` |
 | Use Ollama locally | `Client(OllamaAdapter())` — no key needed |
 | Change provider | Swap the adapter, keep everything else the same |
