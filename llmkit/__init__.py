@@ -6,7 +6,18 @@ Provides convenient imports for core classes.
 
 # from .adapters import ProviderAdapter
 from .core.client import Client
-
+from .core import (
+    APIError,
+    AuthenticationError,
+    ConnectionError,
+    InvalidRequestError,
+    LLMKitError,
+    RateLimitError,
+    TimeoutError,
+    UnknownError,
+    CostTracker,
+    RetryConfig
+)
 from .core.types import (
     Message,
     Response,
@@ -32,5 +43,15 @@ __all__ = [
     "ToolResultBlock",
     "ToolUseBlock",
     "Usage",
+    "APIError",
+    "AuthenticationError",
+    "ConnectionError",
+    "InvalidRequestError",
+    "LLMKitError",
+    "RateLimitError",
+    "TimeoutError",
+    "UnknownError",
+    "CostTracker",
+    "RetryConfig",
     # "ProviderAdapter",
 ]
