@@ -100,3 +100,22 @@ RETRYABLE_ERRORS: tuple[type[LLMKitError], ...] = (
     ConnectionError,
     APIError,
 )
+
+# Which error types cause the router to retry the same provider first
+# (with backoff) before falling back to the next one.
+RETRY_BEFORE_FALLBACK_ERRORS: tuple[type[LLMKitError], ...] = (
+    RateLimitError,
+    TimeoutError,
+)
+
+# Which error types cause the router to fall back to the next provider
+# immediately, without retrying the current one first.
+IMMEDIATE_FALLBACK_ERRORS: tuple[type[LLMKitError], ...] = (
+    APIError,
+    AuthenticationError,
+    ConnectionError,
+    UnknownError,
+)
+
+# InvalidRequestError is in neither set — it raises immediately with no
+# fallback, since a malformed request won't succeed on any provider.

@@ -3,10 +3,9 @@ Top-level package for llmkit.
 
 Provides convenient imports for core classes.
 """
-
-# from .adapters import ProviderAdapter
-from .core.client import Client
-from .core import (
+from llmkit.core.client import Client
+from llmkit.core.cost import CostTracker
+from llmkit.core.errors import (
     APIError,
     AuthenticationError,
     ConnectionError,
@@ -15,10 +14,10 @@ from .core import (
     RateLimitError,
     TimeoutError,
     UnknownError,
-    CostTracker,
-    RetryConfig
 )
-from .core.types import (
+from llmkit.core.retry import RetryConfig
+from llmkit.core.router import ProviderConfig, RouterClient
+from llmkit.core.types import (
     Message,
     Response,
     Role,
@@ -32,7 +31,13 @@ from .core.types import (
 )
 
 __all__ = [
+    # Client + router
     "Client",
+    "RouterClient",
+    "ProviderConfig",
+    "RetryConfig",
+    "CostTracker",
+    # Core types
     "Message",
     "Response",
     "Role",
@@ -43,15 +48,13 @@ __all__ = [
     "ToolResultBlock",
     "ToolUseBlock",
     "Usage",
-    "APIError",
-    "AuthenticationError",
-    "ConnectionError",
-    "InvalidRequestError",
+    # Exceptions
     "LLMKitError",
     "RateLimitError",
+    "AuthenticationError",
     "TimeoutError",
+    "ConnectionError",
+    "InvalidRequestError",
+    "APIError",
     "UnknownError",
-    "CostTracker",
-    "RetryConfig",
-    # "ProviderAdapter",
 ]

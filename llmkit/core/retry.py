@@ -25,13 +25,16 @@ class RetryConfig:
     """Configuration for retry behaviour. Pass an instance to Client().
 
     Args:
-        max_attempts:  Total attempts (1 = no retries, 3 = initial + 2 retries).
-        base_delay:    Base wait in seconds before the first retry.
-        max_delay:     Cap on wait time between retries.
-        on_retry:      Optional callback called before each retry with
-                       (attempt: int, error: LLMKitError, wait: float).
-                       Useful for logging retries without coupling to a
-                       specific logger.
+        max_attempts:    Total attempts (1 = no retries, 3 = initial + 2 retries).
+        base_delay:      Base wait in seconds before the first retry.
+        max_delay:       Cap on wait time between retries.
+        retryable_errors: Tuple of LLMKitError subclasses that will be retried.
+                         Defaults to RETRYABLE_ERRORS. Override to restrict which
+                         errors trigger retries — e.g. RouterClient uses this to
+                         ensure per-provider retry only fires for rate limits and
+                         timeouts, while API errors fall back immediately.
+        on_retry:        Optional callback called before each retry with
+                         (attempt: int, error: LLMKitError, wait: float).
     """
 
     def __init__(
@@ -39,6 +42,7 @@ class RetryConfig:
         max_attempts: int = 3,
         base_delay: float = 1.0,
         max_delay: float = 60.0,
+        retryable_errors: "tuple[type[LLMKitError], ...] | None" = None,
         on_retry: "RetryCallback | None" = None,
     ) -> None:
         if max_attempts < 1:
@@ -46,7 +50,13 @@ class RetryConfig:
         self.max_attempts = max_attempts
         self.base_delay = base_delay
         self.max_delay = max_delay
+        self._retryable_errors = retryable_errors  # None means use default
         self.on_retry = on_retry
+
+    @property
+    def retryable_errors(self) -> "tuple[type[LLMKitError], ...]":
+        from llmkit.core.errors import RETRYABLE_ERRORS
+        return self._retryable_errors if self._retryable_errors is not None else RETRYABLE_ERRORS
 
     def wait_for_attempt(self, attempt: int) -> float:
         """Seconds to wait before `attempt` (0-indexed). Attempt 0 = first retry."""
@@ -109,7 +119,7 @@ async def with_retry(
             last_error = normalize_error(exc, provider)
 
         # Only retry if this error class is in the retryable set.
-        if not isinstance(last_error, RETRYABLE_ERRORS):
+        if not isinstance(last_error, retry_config.retryable_errors):
             raise last_error
 
         # Don't sleep after the last attempt — just raise.
